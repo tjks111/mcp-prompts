@@ -1,7 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import express from 'express';
 import cors from 'cors';
-import { setupSSE } from './sse.js';
+import { enableSseInHttpServer } from './sse.js';
 
 export interface HttpServerConfig {
   port: number;
@@ -34,16 +34,16 @@ export async function startHttpServer(
     res.json({ status: 'ok' });
   });
 
-  // Set up SSE if enabled
-  if (config.enableSSE) {
-    setupSSE(app, config.ssePath || '/events');
-  }
-
   // Start the server
   await new Promise<void>((resolve, reject) => {
+    let httpServer: ReturnType<typeof app.listen> | null = null;
     try {
-      const httpServer = app.listen(config.port, config.host, () => {
+      httpServer = app.listen(config.port, config.host, () => {
         console.log(`HTTP server listening at http://${config.host}:${config.port}`);
+        // Set up SSE if enabled
+        if (config.enableSSE && httpServer) {
+          enableSseInHttpServer(config, httpServer, server);
+        }
         resolve();
       });
 

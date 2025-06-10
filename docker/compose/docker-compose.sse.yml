@@ -16,18 +16,20 @@ services:
       - BACKUPS_DIR=/app/data/backups
       - LOG_LEVEL=info
       - HTTP_SERVER=true
-      - PORT=3003
+      - PORT=3000 # Standardize internal port to 3000, Nginx proxies to this. Host mapping 3003:3000 is for external access to main API.
       - HOST=0.0.0.0
       - ENABLE_SSE=true
-      - SSE_PATH=/connect
-      - SSE_HEARTBEAT_INTERVAL=30000
-      - SSE_RECONNECT_TIMEOUT=3000
+      - SSE_PATH=/events # Standardized SSE_PATH
+      - SSE_HEARTBEAT_INTERVAL_MS=30000 # Corrected variable name and sensible default
+      - SSE_CLIENT_TIMEOUT_MS=60000 # Added new variable with default
+      - SSE_MESSAGE_HISTORY=50 # Added new variable with default
+      # - SSE_RECONNECT_TIMEOUT=3000 # Removed, unused by server
       - CORS_ORIGIN=*
     volumes:
       - mcp-prompts-data:/app/data
     ports:
-      - "3003:3000"  # HTTP API
-      - "3010:3010"  # Port for SSE transport
+      - "3003:3000"  # HTTP API exposed on host 3003, container runs on 3000
+      # - "3010:3010"  # Removed, SSE is on main port via Nginx
     healthcheck:
       test: ["CMD", "/app/scripts/health_check.sh", "localhost", "3000"]
     restart: unless-stopped

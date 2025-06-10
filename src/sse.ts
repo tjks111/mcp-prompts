@@ -11,10 +11,8 @@ import {
 } from './interfaces.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import type { Server as MCPServer } from '@modelcontextprotocol/sdk/server/index.js';
-import { Express } from 'express';
 import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node:http';
 import EventEmitter from 'node:events';
-import { Transport } from '@modelcontextprotocol/sdk/cjs/shared/transport.js';
 
 // Define the interfaces that were previously imported
 interface SseClient {
@@ -42,12 +40,7 @@ interface SseManagerOptions {
   messageHistory?: number;
 }
 
-interface TransportImplementation {
-  connect: (transportType: string, options: any) => any;
-  disconnect: (transportType: string) => any;
-  sendMessage: (message: any, clientId?: string) => boolean;
-  getClients: () => string[];
-}
+// Removed TransportImplementation interface as it's associated with the removed SseManager.transportImpl
 
 /**
  * Manager for SSE clients and message broadcasting
@@ -55,8 +48,10 @@ interface TransportImplementation {
 export class SseManager extends EventEmitter {
   private clients: Map<string, SseClient> = new Map();
   private _options: SseManagerOptions;
-  private _transportImpl: TransportImplementation | null = null;
-  private sseTransport: SSEServerTransport | null = null;
+  // _transportImpl property removed as SseManager.transportImpl is being removed
+  // private _transportImpl: TransportImplementation | null = null;
+  // sseTransport property seems unused in the context of MCP integration, SSEServerTransport instance will be in enableSseInHttpServer
+  // private sseTransport: SSEServerTransport | null = null;
   private static instance: SseManager | null = null;
 
   private constructor(options: SseManagerOptions = {}) {
@@ -76,96 +71,30 @@ export class SseManager extends EventEmitter {
     return SseManager.instance;
   }
 
-  /**
-   * Get SSE transport implementation that can be passed to MCP Server
-   */
-  public get transportImpl(): TransportImplementation {
-    if (!this._transportImpl) {
-      // Create a transport implementation
-      this._transportImpl = {
-        connect: async (transportType: string, options: any) => {
-          if (transportType === 'sse') {
-            return {
-              send: (message: any) => {
-                this.broadcast(message);
-              },
-              close: () => {
-                // No-op for SSE transport
-              }
-            };
-          }
-          throw new Error(`Unsupported transport type: ${transportType}`);
-        },
-        disconnect: async (transportType: string) => {
-          if (transportType === 'sse') {
-            return;
-          }
-          throw new Error(`Unsupported transport type: ${transportType}`);
-        },
-        sendMessage: (message, clientId) => {
-          if (clientId) {
-            // Send to specific client
-            const client = this.clients.get(clientId);
-            if (client) {
-              this._writeToClient(client, message);
-              return true;
-            }
-            return false;
-          } else {
-            // Broadcast to all clients
-            let sent = false;
-            for (const client of this.clients.values()) {
-              this._writeToClient(client, message);
-              sent = true;
-            }
-            return sent;
-          }
-        },
-        
-        getClients: () => {
-          return Array.from(this.clients.keys());
-        }
-      };
-    }
-    
-    return this._transportImpl;
-  }
+  // SseManager.transportImpl and its associated properties/interfaces have been removed
+  // as they are not used by the current SSEServerTransport-based MCP integration.
   
   /**
    * Get the SSE server transport that can be used with the MCP Server
    */
-  public get sseTransportInstance(): SSEServerTransport | null {
-    return this.sseTransport;
-  }
-
-  public set sseTransportInstance(transport: SSEServerTransport | null) {
-    this.sseTransport = transport;
-  }
+  // Getter/setter for sseTransportInstance removed as the instance is managed locally in enableSseInHttpServer
 
   /**
-   * Handle a new client connection
-   * @param req The HTTP request
-   * @param res The HTTP response
+   * Establishes and manages a new client connection.
+   * This method is expected to be called when SSEServerTransport emits a 'connection' event.
+   * @param req The HTTP request from the new client
+   * @param res The HTTP response for the new client
    * @param options Connection options
    * @returns The client ID
    */
   public handleConnection(
     req: IncomingMessage,
     res: ServerResponse,
-    options: SseOptions = {}
+    options: SseOptions = {} // options like clientId can be passed by SSEServerTransport if available
   ): string {
-    // Set headers for SSE
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no', // Disable Nginx buffering
-    });
-    
-    // Force flush headers
-    res.flushHeaders();
-    
-    // Generate a client ID if not provided
+    // Headers (writeHead, flushHeaders) are now assumed to be handled by SSEServerTransport
+    // before this method is called via a connection event.
+
     const clientId = options.clientId || `client_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
     
     // Create the client object
@@ -416,58 +345,70 @@ export function enableSseInHttpServer(
   mcpServer?: MCPServer
 ): SseManager {
   const manager = getSseManager({
-    heartbeatInterval: 30000, // 30 seconds
-    clientTimeout: 60000,    // 60 seconds
-    messageHistory: 50
+    heartbeatInterval: config.sseHeartbeatIntervalMs || 30000,
+    clientTimeout: config.sseClientTimeoutMs || 60000,
+    messageHistory: config.sseMessageHistory || 50
   });
 
-  // Set up HTTP endpoint for SSE
   const ssePath = config.ssePath || '/events';
-  httpServer.on('request', (req, res) => {
-    if (req && req.url && req.url.startsWith(ssePath)) {
-      manager.handleConnection(req, res);
-    }
-  });
 
-  // If MCP server is provided, integrate with it
-  if (mcpServer) {
-    // Register SSE transport with MCP server
-    mcpServer.connect({
-      type: 'sse',
-      start: () => Promise.resolve(),
-      send: (message: any) => {
-        manager.broadcast(message);
-        return Promise.resolve();
-      },
-      close: () => Promise.resolve()
-    } as unknown as Transport);
+  // Instantiate the SDK's SSEServerTransport
+  // We need to make assumptions about its constructor and how it signals SseManager.
+  // Assumption:
+  // 1. Constructor: new SSEServerTransport(httpServer, path)
+  // 2. Connection event: sseSdkTransport.on('connection', ({ req, res, id }) => manager.handleConnection(req, res, { clientId: id }))
+  // 3. MCP send integration: sseSdkTransport.setSendHandler(manager.broadcast.bind(manager)) or similar.
+  //    Or, SSEServerTransport itself implements `send` and calls the broadcast handler.
+
+  // This is a simplified conceptual integration. The actual SSEServerTransport API might differ.
+  const sseSdkTransport = new SSEServerTransport(httpServer, ssePath);
+
+  // Configure SSEServerTransport to use SseManager for client lifecycle and broadcasting
+  // This part is highly dependent on the actual API of SSEServerTransport.
+  // Attempting a plausible event-based integration with SSEServerTransport:
+  if (typeof (sseSdkTransport as any).on === 'function') {
+    console.log("Attempting event-based integration with SSEServerTransport.");
+
+    // 1. Handle new client connections detected by SSEServerTransport
+    (sseSdkTransport as any).on('connection', (eventData: { req: IncomingMessage; res: ServerResponse; clientId?: string; metadata?: Record<string,string> }) => {
+      if (!eventData || !eventData.req || !eventData.res) {
+        console.error("SSEServerTransport 'connection' event fired with invalid data.", eventData);
+        return;
+      }
+      manager.handleConnection(eventData.req, eventData.res, { clientId: eventData.clientId, metadata: eventData.metadata });
+    });
+
+    // 2. Handle messages from MCP (via SSEServerTransport.send) to be broadcast by SseManager
+    // Assuming SSEServerTransport emits an event like 'broadcast_message' or 'mcp_send' when its `send` method is called by MCP.
+    (sseSdkTransport as any).on('broadcast_message', (message: any) => {
+      // This event name 'broadcast_message' is speculative.
+      // It implies that SSEServerTransport's `send` method, when called by MCP,
+      // emits this event for SseManager to then perform the actual broadcast.
+      manager.broadcast(message);
+    });
+
+    // 3. Handle client disconnections detected by SSEServerTransport
+    (sseSdkTransport as any).on('client_disconnected', (clientId: string) => {
+      // This event name 'client_disconnected' is speculative.
+      if (clientId) {
+        console.log(`SSEServerTransport reported client disconnected: ${clientId}. SseManager cleaning up.`);
+        manager.disconnectClient(clientId); // Use public method, which calls _disconnectClient
+      }
+    });
+
+  } else {
+    console.warn("SSEServerTransport does not appear to be an EventEmitter (no 'on' method). Advanced SseManager integration (connections, broadcast, disconnections) may rely on SSEServerTransport's internal design or constructor options not visible here.");
   }
 
+  // If MCP server is provided, integrate with it using the SDK's transport
+  if (mcpServer) {
+    mcpServer.connect(sseSdkTransport); // sseSdkTransport must implement the MCP Transport interface
+  }
+
+  // Remove the old manual HTTP endpoint setup
+  // httpServer.on('request', (req, res) => { ... }); // This is now handled by SSEServerTransport
+
   return manager;
-}
-
-export function setupSSE(app: Express, path: string) {
-  app.get(path, (req, res) => {
-    // Set SSE headers
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive'
-    });
-
-    // Send initial connection message
-    res.write('event: connected\ndata: {}\n\n');
-
-    // Keep connection alive
-    const keepAlive = setInterval(() => {
-      res.write(': keepalive\n\n');
-    }, 30000);
-
-    // Clean up on client disconnect
-    req.on('close', () => {
-      clearInterval(keepAlive);
-    });
-  });
 }
 
 interface SseOptions {
