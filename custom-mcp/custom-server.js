@@ -3,7 +3,7 @@
 /**
  * Custom MCP Prompts Server with overridden configuration
  */
-import { Server } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import * as fs from "fs/promises";
@@ -63,6 +63,18 @@ const server = new McpServer({
   version: CONFIG.version,
 });
 
+// Define the callback for list_prompts
+async function listPromptsCallback(params) {
+  // params would normally be validated by Zod schema from server.tool
+  // For direct testing, ensure params match expectations or handle potential undefined.
+  return {
+    type: "object",
+    object: {
+      prompts: Object.values(memoryPrompts),
+    },
+  };
+}
+
 // Add simple list_prompts tool
 server.tool(
   "list_prompts",
@@ -73,14 +85,7 @@ server.tool(
     sort: z.enum(["name", "updatedAt"]).optional(),
     order: z.enum(["asc", "desc"]).optional(),
   },
-  async (params) => {
-    return {
-      type: "object",
-      object: {
-        prompts: Object.values(memoryPrompts),
-      },
-    };
-  }
+  listPromptsCallback
 );
 
 // Add simple get_prompt tool
@@ -254,4 +259,7 @@ async function main() {
   }
 }
 
-main(); 
+main();
+
+// Export memoryPrompts for testing purposes
+export { server, listPromptsCallback, memoryPrompts };
